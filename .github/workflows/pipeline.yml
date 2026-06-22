@@ -11,12 +11,9 @@ jobs:
   checkov-scan:
     runs-on: ubuntu-latest
     steps:
-      # Downloads your code onto the GitHub Actions runner machine
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Scans all Terraform files for security misconfigurations
-      # If any check fails the pipeline stops here
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
@@ -26,28 +23,17 @@ jobs:
   # ─── STAGE 2 — SONARCLOUD SAST ─────────────────────────────────
   sonarcloud-scan:
     runs-on: ubuntu-latest
-    # This stage only starts after Stage 1 passes
-    # needs: means this job depends on another job finishing successfully
     needs: checkov-scan
     steps:
-      # Downloads your code onto a fresh runner machine for this stage
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # fetch-depth 0 means download the full git history
-          # SonarCloud needs this to do accurate code analysis
-          # Without it SonarCloud only sees the latest commit
           fetch-depth: 0
 
-      # Runs SonarCloud analysis against your source code
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master
         env:
-          # GITHUB_TOKEN is automatically provided by GitHub Actions
-          # SonarCloud uses it to post scan results back to your pull requests
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # SONAR_TOKEN is the secret we added to GitHub
-          # This authenticates us to SonarCloud
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
@@ -55,3 +41,57 @@ jobs:
             -Dsonar.organization=willis-welcome
             -Dsonar.sources=app
             -Dsonar.python.version=3.11
+
+  # ─── STAGE 3 — OWASP ZAP DAST ──────────────────────────────────
+  zap-scan:
+    runs-on: ubuntu-latest
+    # Only starts after Stage 2 passes
+    needs: sonarcloud-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 1 - Build and start the application using Docker Compose
+      # -d means detached mode - runs in the background so the pipeline continues
+      # --build forces Docker to rebuild the image from scratch
+      - name: Start application
+        run: docker compose up -d --build
+
+      # Step 2 - Wait for the application to be ready
+      # The app needs a few seconds to start before ZAP can attack it
+      # We curl the health endpoint in a loop until it responds
+      - name: Wait for app to be ready
+        run: |
+          echo "Waiting for application to start..."
+          for i in {1..30}; do
+            if curl -s http://localhost:5000/health > /dev/null; then
+              echo "Application is ready"
+              break
+            fi
+            echo "Attempt $i - waiting..."
+            sleep 2
+          done
+
+      # Step 3 - Run OWASP ZAP baseline scan
+      # Baseline scan is the standard starting point
+      # It runs the spider to map the app then runs passive checks
+      # -t is the target URL to attack
+      # -r generates an HTML report of findings
+      # -I means ignore warnings - only fail on high severity findings
+      - name: Run OWASP ZAP Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          # The URL of our running application
+          target: 'http://localhost:5000'
+          # Generate a detailed HTML report
+          rules_file_name: '.zap/rules.tsv'
+          # Don't fail the pipeline on warnings - only on high severity
+          cmd_options: '-I'
+
+      # Step 4 - Stop the application after ZAP is done
+      # Clean up the containers so nothing is left running
+      - name: Stop application
+        run: docker compose down
+        # Always run this step even if ZAP found issues
+        # We always want to clean up
+        if: always()

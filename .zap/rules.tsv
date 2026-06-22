@@ -1,0 +1,13 @@
+# This file tells ZAP which rules to ignore and why
+# Format is: rule_id TAB action TAB reason
+# IGNORE means don't fail on this finding
+# WARN means log it but don't fail
+
+# Anti-CSRF tokens not needed for our read-only API endpoints
+10202	IGNORE	(No need for anti-CSRF tokens for read-only endpoints)
+
+# Content Security Policy not required for our JSON API
+10038	IGNORE	(JSON API does not serve HTML content)
+
+# Application is not behind a load balancer in test environment  
+10098	IGNORE	(No load balancer in pipeline test environment)

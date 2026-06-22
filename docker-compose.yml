@@ -1,0 +1,19 @@
+# Docker Compose defines how to run multiple containers together
+# In our pipeline we use it to start the app so ZAP can attack it
+
+version: '3.8'
+
+services:
+
+  # This is our application container
+  app:
+    # Build the image using the Dockerfile in the app folder
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    # Map port 5000 inside the container to port 5000 on the host machine
+    # ZAP will attack localhost:5000
+    ports:
+      - "5000:5000"
+    # Keep trying to restart if it crashes
+    restart: unless-stopped
