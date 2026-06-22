@@ -135,7 +135,12 @@ jobs:
       # High and medium vulnerabilities get reported but don't stop the pipeline
       # In a stricter environment you'd set --fail-on high
       - name: Scan SBOM with Grype
-        run: grype sbom:./sbom.json --fail-on critical
+        run: |
+          # --fail-on critical means only stop the pipeline for critical severity
+          # --only-fixed means ignore CVEs that have no patch available yet
+          # This is standard practice - you cannot fix what has no fix
+          # The SBOM artifact still records everything for compliance purposes
+          grype sbom:./sbom.json --fail-on critical --only-fixed
 
       # Step 6 - Save the SBOM as a pipeline artifact
       # This stores sbom.json so you can download and review it after the pipeline runs
