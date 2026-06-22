@@ -1,35 +1,57 @@
-# This is the name of your pipeline - what GitHub calls it
 name: DevSecOps Security Pipeline
 
-# This tells GitHub when to run the pipeline
-# Every time you push code to the main branch, the pipeline triggers
 on:
   push:
     branches:
       - main
 
-# Jobs are the actual work the pipeline does
 jobs:
 
-  # Stage 1 - Checkov scans your Terraform files for security issues
+  # ─── STAGE 1 — CHECKOV IaC SECURITY SCAN ──────────────────────
   checkov-scan:
-    
-    # This tells GitHub what type of computer to run this job on
-    # ubuntu-latest means a fresh Linux machine spun up just for this job
     runs-on: ubuntu-latest
-
     steps:
-      # Step 1 - Download your code onto the Linux machine
-      # Without this step the machine has no idea what your code looks like
+      # Downloads your code onto the GitHub Actions runner machine
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2 - Install and run Checkov against your terraform folder
-      # Checkov reads every .tf file and checks for security misconfigurations
+      # Scans all Terraform files for security misconfigurations
+      # If any check fails the pipeline stops here
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
-          # Tell Checkov which folder to scan
           directory: terraform
-          # Tell Checkov to look for Terraform files specifically
           framework: terraform
+
+  # ─── STAGE 2 — SONARCLOUD SAST ─────────────────────────────────
+  sonarcloud-scan:
+    runs-on: ubuntu-latest
+    # This stage only starts after Stage 1 passes
+    # needs: means this job depends on another job finishing successfully
+    needs: checkov-scan
+    steps:
+      # Downloads your code onto a fresh runner machine for this stage
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth 0 means download the full git history
+          # SonarCloud needs this to do accurate code analysis
+          # Without it SonarCloud only sees the latest commit
+          fetch-depth: 0
+
+      # Runs SonarCloud analysis against your source code
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          # GITHUB_TOKEN is automatically provided by GitHub Actions
+          # SonarCloud uses it to post scan results back to your pull requests
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # SONAR_TOKEN is the secret we added to GitHub
+          # This authenticates us to SonarCloud
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=willis-welcome_devsecops-pipeline
+            -Dsonar.organization=willis-welcome
+            -Dsonar.sources=app
+            -Dsonar.python.version=3.11

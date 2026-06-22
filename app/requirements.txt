@@ -1,0 +1,10 @@
+# These are the Python libraries our application needs
+# pip reads this file and installs everything listed here
+
+# Flask is the web framework our app is built on
+flask==3.0.0
+
+# gunicorn is a production grade web server for Python apps
+# Flask's built in server is for development only - not production
+# gunicorn handles multiple requests simultaneously
+gunicorn==21.2.0
