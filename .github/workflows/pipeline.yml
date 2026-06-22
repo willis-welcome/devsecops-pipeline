@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   issues: write
+  actions: write
 
 jobs:
 
@@ -87,11 +88,9 @@ jobs:
       - name: Run OWASP ZAP Scan
         uses: zaproxy/action-baseline@v0.12.0
         with:
-          # The URL of our running application
           target: 'http://localhost:5000'
-          # Generate a detailed HTML report
-          rules_file_name: '.zap/rules.tsv'
-          # Don't fail the pipeline on warnings - only on high severity
+          # Name the report file - no spaces or special characters
+          report_html: 'zap-scan-report.html'
           cmd_options: '-I'
 
       # Step 4 - Stop the application after ZAP is done
