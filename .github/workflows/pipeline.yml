@@ -95,3 +95,55 @@ jobs:
       - name: Stop application
         run: docker compose down
         if: always()
+        # ─── STAGE 4 — SYFT SBOM AND GRYPE CVE SCAN ───────────────────
+  sbom-scan:
+    runs-on: ubuntu-latest
+    # Only starts after ZAP passes
+    needs: zap-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 1 - Build the Docker image so Syft can inspect it
+      # Syft needs the actual built image to generate the ingredient list
+      # -t tags the image with a name so we can reference it
+      - name: Build Docker image
+        run: docker build -t devsecops-app:latest ./app
+
+      # Step 2 - Install Syft
+      # Syft is made by Anchore - a container security company
+      # This curl command downloads and installs Syft in one line
+      - name: Install Syft
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      # Step 3 - Generate the SBOM
+      # Syft scans the container image and lists every library inside it
+      # -o spdx-json outputs in SPDX format - the US government standard format
+      # SPDX stands for Software Package Data Exchange
+      # The result is saved to sbom.json
+      - name: Generate SBOM with Syft
+        run: syft devsecops-app:latest -o spdx-json > sbom.json
+
+      # Step 4 - Install Grype
+      # Grype is also made by Anchore - it reads SBOMs and checks for CVEs
+      - name: Install Grype
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      # Step 5 - Scan the SBOM for known vulnerabilities
+      # Grype reads sbom.json and checks every package against CVE databases
+      # --fail-on critical means only fail the pipeline on critical CVEs
+      # High and medium vulnerabilities get reported but don't stop the pipeline
+      # In a stricter environment you'd set --fail-on high
+      - name: Scan SBOM with Grype
+        run: grype sbom:./sbom.json --fail-on critical
+
+      # Step 6 - Save the SBOM as a pipeline artifact
+      # This stores sbom.json so you can download and review it after the pipeline runs
+      # In federal environments you are required to store and share this file
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-report
+          path: sbom.json
+        # Always upload even if Grype found something
+        if: always()
