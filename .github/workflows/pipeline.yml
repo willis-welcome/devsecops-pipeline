@@ -5,6 +5,12 @@ on:
     branches:
       - main
 
+# Gives the pipeline permission to write to the repository
+# ZAP needs this to post its scan results as a GitHub issue
+permissions:
+  contents: read
+  issues: write
+
 jobs:
 
   # ─── STAGE 1 — CHECKOV IaC SECURITY SCAN ──────────────────────
