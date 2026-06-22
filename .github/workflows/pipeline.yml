@@ -1,0 +1,35 @@
+# This is the name of your pipeline - what GitHub calls it
+name: DevSecOps Security Pipeline
+
+# This tells GitHub when to run the pipeline
+# Every time you push code to the main branch, the pipeline triggers
+on:
+  push:
+    branches:
+      - main
+
+# Jobs are the actual work the pipeline does
+jobs:
+
+  # Stage 1 - Checkov scans your Terraform files for security issues
+  checkov-scan:
+    
+    # This tells GitHub what type of computer to run this job on
+    # ubuntu-latest means a fresh Linux machine spun up just for this job
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1 - Download your code onto the Linux machine
+      # Without this step the machine has no idea what your code looks like
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2 - Install and run Checkov against your terraform folder
+      # Checkov reads every .tf file and checks for security misconfigurations
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          # Tell Checkov which folder to scan
+          directory: terraform
+          # Tell Checkov to look for Terraform files specifically
+          framework: terraform
