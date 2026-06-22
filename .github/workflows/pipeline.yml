@@ -152,3 +152,64 @@ jobs:
           path: sbom.json
         # Always upload even if Grype found something
         if: always()
+        # ─── STAGE 5 — DOCKER BUILD AND PUSH TO ECR ───────────────────
+  docker-build-push:
+    runs-on: ubuntu-latest
+    # Only starts after SBOM scan passes
+    needs: sbom-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 1 - Authenticate to AWS using OIDC
+      # This is where the magic happens - no credentials stored anywhere
+      # GitHub sends a signed token to AWS proving who we are
+      # AWS verifies it and returns temporary credentials that expire in 15 minutes
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # The role we created - GitHub will assume this role
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          # The region where our ECR repository lives
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Step 2 - Log into ECR
+      # Before we can push an image we need to authenticate Docker to ECR
+      # This command gets a temporary password from AWS and logs Docker in
+      # The password expires after 12 hours
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Step 3 - Build the Docker image and push it to ECR
+      # We tag the image with the Git commit SHA
+      # github.sha is the unique identifier of the exact commit that triggered this pipeline
+      # Using the commit SHA as the tag means every image is traceable back to exact code
+      # This is immutable - that SHA tag can never be overwritten in ECR
+      - name: Build and push Docker image
+        env:
+          # ECR registry URL comes from the login step above
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          # The name of our ECR repository
+          ECR_REPOSITORY: devsecops-app
+          # The commit SHA becomes the image tag
+          # Every build produces a uniquely tagged image
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build the image from our Dockerfile
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+
+          # Push the tagged image to ECR
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+          # Print the full image URI so we can see exactly what was pushed
+          echo "Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      # Step 4 - Verify the image exists in ECR
+      # This confirms the push actually worked
+      # aws ecr describe-images queries ECR and returns metadata about the image
+      - name: Verify image in ECR
+        run: |
+          aws ecr describe-images \
+            --repository-name devsecops-app \
+            --region us-east-2
