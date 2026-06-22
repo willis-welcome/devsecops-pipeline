@@ -22,7 +22,7 @@ jobs:
       # Step 1 - Download your code onto the Linux machine
       # Without this step the machine has no idea what your code looks like
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # Step 2 - Install and run Checkov against your terraform folder
       # Checkov reads every .tf file and checks for security misconfigurations
