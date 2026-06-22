@@ -3,57 +3,33 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# The S3 bucket resource - our storage container
+# ─── MAIN APP BUCKET ───────────────────────────────────────────
+
 resource "aws_s3_bucket" "app_bucket" {
   bucket = "devsecops-pipeline-app-bucket"
 }
 
-# FIX 1 - Encrypts everything stored in the bucket using KMS
-# KMS is AWS Key Management Service - it manages the encryption keys
-# Even if someone accesses the raw files they cannot read them
+# Encrypts everything in the main bucket using AES256
 resource "aws_s3_bucket_server_side_encryption_configuration" "app_bucket" {
   bucket = aws_s3_bucket.app_bucket.id
-
   rule {
     apply_server_side_encryption_by_default {
-      # AES256 is the encryption algorithm - military grade encryption
       sse_algorithm = "AES256"
     }
   }
 }
 
-# FIX 2 - Blocks all public access to this bucket
-# This is a hard stop - no setting anywhere can accidentally make this bucket public
+# Hard blocks all public access to the main bucket
 resource "aws_s3_bucket_public_access_block" "app_bucket" {
-  bucket = aws_s3_bucket.app_bucket.id
-
-  # Block any public access control lists
+  bucket                  = aws_s3_bucket.app_bucket.id
   block_public_acls       = true
-  # Block any public bucket policies
   block_public_policy     = true
-  # Ignore any public access control lists
   ignore_public_acls      = true
-  # Restrict any public bucket policies
   restrict_public_buckets = true
 }
 
-# FIX 3 - Turns on access logging
-# Every request to this bucket gets recorded in a separate logging bucket
-# Who accessed it, when, from where - full audit trail
-resource "aws_s3_bucket" "log_bucket" {
-  bucket = "devsecops-pipeline-logs"
-}
-
-resource "aws_s3_bucket_logging" "app_bucket" {
-  bucket = aws_s3_bucket.app_bucket.id
-  # Send all logs to our logging bucket
-  target_bucket = aws_s3_bucket.log_bucket.id
-  target_prefix = "access-logs/"
-}
-
-# FIX 4 - Enables versioning
-# Every version of every file is preserved
-# If a file is deleted or overwritten you can restore the previous version
+# Enables versioning on the main bucket
+# Every version of every file is preserved and recoverable
 resource "aws_s3_bucket_versioning" "app_bucket" {
   bucket = aws_s3_bucket.app_bucket.id
   versioning_configuration {
@@ -61,25 +37,137 @@ resource "aws_s3_bucket_versioning" "app_bucket" {
   }
 }
 
-# FIX 5 - Cross region replication requires versioning first (already enabled above)
-# Tells AWS to copy everything to a backup bucket in a second region
+# Sends access logs from the main bucket to the log bucket
+resource "aws_s3_bucket_logging" "app_bucket" {
+  bucket        = aws_s3_bucket.app_bucket.id
+  target_bucket = aws_s3_bucket.log_bucket.id
+  target_prefix = "access-logs/"
+}
+
+# Lifecycle policy on the main bucket
+# Moves old data to cheaper storage, cleans up old versions, aborts failed uploads
+resource "aws_s3_bucket_lifecycle_configuration" "app_bucket" {
+  bucket = aws_s3_bucket.app_bucket.id
+
+  rule {
+    id     = "lifecycle-rule"
+    status = "Enabled"
+
+    # Move to cheaper storage after 90 days
+    transition {
+      days          = 90
+      storage_class = "STANDARD_IA"
+    }
+
+    # Delete old file versions after 365 days
+    noncurrent_version_expiration {
+      noncurrent_days = 365
+    }
+
+    # FIX - Abort any failed multipart uploads after 7 days
+    # Failed uploads leave incomplete chunks sitting in S3 costing money
+    # This cleans them up automatically
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
+# Cross region replication - copies everything to a backup in us-west-2
 resource "aws_s3_bucket_replication_configuration" "app_bucket" {
   bucket = aws_s3_bucket.app_bucket.id
-  # IAM role that gives S3 permission to replicate to the other region
   role   = aws_iam_role.replication.arn
 
   rule {
     id     = "replicate-everything"
     status = "Enabled"
     destination {
-      # The backup bucket in us-west-2 - a completely different datacenter
       bucket        = "arn:aws:s3:::devsecops-pipeline-app-bucket-replica"
       storage_class = "STANDARD"
     }
   }
 }
 
-# The IAM role that allows S3 to perform replication
+# Event notifications - alerts SNS when files are created or deleted
+resource "aws_s3_bucket_notification" "app_bucket" {
+  bucket = aws_s3_bucket.app_bucket.id
+  topic {
+    topic_arn = aws_sns_topic.bucket_notifications.arn
+    events    = ["s3:ObjectCreated:*", "s3:ObjectRemoved:*"]
+  }
+}
+
+# ─── LOGGING BUCKET ────────────────────────────────────────────
+
+# Separate bucket that receives access logs from the main bucket
+resource "aws_s3_bucket" "log_bucket" {
+  bucket = "devsecops-pipeline-logs"
+}
+
+# FIX - Encrypt the log bucket too
+# Checkov checks every bucket - not just the main one
+resource "aws_s3_bucket_server_side_encryption_configuration" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Block public access on the log bucket too
+resource "aws_s3_bucket_public_access_block" "log_bucket" {
+  bucket                  = aws_s3_bucket.log_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Versioning on the log bucket
+resource "aws_s3_bucket_versioning" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Lifecycle on the log bucket - logs don't need to be kept forever
+resource "aws_s3_bucket_lifecycle_configuration" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  rule {
+    id     = "log-lifecycle-rule"
+    status = "Enabled"
+
+    transition {
+      days          = 90
+      storage_class = "STANDARD_IA"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 365
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
+# ─── SNS TOPIC ─────────────────────────────────────────────────
+
+# FIX - Encrypt the SNS topic
+# Any message sent to this topic is encrypted at rest
+resource "aws_sns_topic" "bucket_notifications" {
+  name              = "s3-bucket-notifications"
+  # kms_master_key_id tells SNS to encrypt messages using AWS managed KMS key
+  kms_master_key_id = "alias/aws/sns"
+}
+
+# ─── IAM REPLICATION ROLE ──────────────────────────────────────
+
+# IAM role that gives S3 permission to replicate to another region
 resource "aws_iam_role" "replication" {
   name = "s3-replication-role"
   assume_role_policy = jsonencode({
@@ -90,43 +178,4 @@ resource "aws_iam_role" "replication" {
       Principal = { Service = "s3.amazonaws.com" }
     }]
   })
-}
-
-# FIX 6 - Lifecycle policy
-# Automatically moves old data to cheaper storage after 90 days
-# Deletes old versions after 365 days to save costs
-resource "aws_s3_bucket_lifecycle_configuration" "app_bucket" {
-  bucket = aws_s3_bucket.app_bucket.id
-
-  rule {
-    id     = "lifecycle-rule"
-    status = "Enabled"
-    transition {
-      # After 90 days move to STANDARD_IA - cheaper storage for infrequently accessed data
-      days          = 90
-      storage_class = "STANDARD_IA"
-    }
-    noncurrent_version_expiration {
-      # Delete old versions after 365 days
-      noncurrent_days = 365
-    }
-  }
-}
-
-# FIX 7 - Event notifications
-# Sends an alert to an SNS topic whenever something happens in the bucket
-# SNS is Simple Notification Service - AWS's alerting system
-resource "aws_s3_bucket_notification" "app_bucket" {
-  bucket = aws_s3_bucket.app_bucket.id
-  topic {
-    # The SNS topic that receives the notifications
-    topic_arn = aws_sns_topic.bucket_notifications.arn
-    # Alert on any event - creates, deletes, restores
-    events    = ["s3:ObjectCreated:*", "s3:ObjectRemoved:*"]
-  }
-}
-
-# The SNS topic that receives bucket event notifications
-resource "aws_sns_topic" "bucket_notifications" {
-  name = "s3-bucket-notifications"
 }
