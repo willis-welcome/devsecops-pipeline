@@ -1,0 +1,168 @@
+# ─── SERVICE ACCOUNT ───────────────────────────────────────────
+# A service account is a Kubernetes identity for a pod
+# This one is linked to the AWS IAM role we created with IRSA
+# So this pod gets its own AWS permissions - not the node's permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-service-account
+  namespace: default
+  annotations:
+    # This annotation links the Kubernetes service account to the AWS IAM role
+    # When this pod starts it automatically gets temporary AWS credentials
+    # for the devsecops-app-pod-role we created in Terraform
+    eks.amazonaws.com/role-arn: arn:aws:iam::050002895805:role/devsecops-app-pod-role
+
+---
+# ─── DEPLOYMENT ────────────────────────────────────────────────
+# A Deployment tells Kubernetes how to run your application
+# It manages creating pods, restarting crashed ones, and rolling updates
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devsecops-app
+  namespace: default
+  labels:
+    app: devsecops-app
+spec:
+  # Run 2 copies of the pod at all times
+  # If one crashes Kubernetes immediately starts a replacement
+  # If one node fails the other pod keeps serving traffic
+  replicas: 2
+
+  # Tells Kubernetes which pods this Deployment manages
+  # Matches pods that have the label app: devsecops-app
+  selector:
+    matchLabels:
+      app: devsecops-app
+
+  template:
+    metadata:
+      labels:
+        app: devsecops-app
+    spec:
+      # Use the service account we created above
+      # This gives the pod its own AWS IAM identity via IRSA
+      serviceAccountName: app-service-account
+
+      # Security settings at the pod level
+      # These apply to all containers in this pod
+      securityContext:
+        # Run all containers as a non-root user
+        # Root inside a container = root on the host if container escapes
+        # User ID 1000 is a standard non-privileged user
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # seccompProfile restricts which system calls the container can make
+        # RuntimeDefault is a safe set of allowed system calls
+        # Blocks dangerous calls like ptrace which attackers use to inspect memory
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: devsecops-app
+          # Your image from ECR - using the commit SHA as the tag
+          # Replace COMMIT_SHA with the actual SHA from your last pipeline run
+          # You can find it in the Actions tab on GitHub
+          image: 050002895805.dkr.ecr.us-east-2.amazonaws.com/devsecops-app:latest
+
+          ports:
+            - containerPort: 5000
+
+          # Security settings at the container level
+          # These are the hardening settings that limit what an attacker can do
+          # even if they get code execution inside the container
+          securityContext:
+            # Cannot run as root - enforces the pod-level setting
+            runAsNonRoot: true
+            runAsUser: 1000
+
+            # The container filesystem is read only
+            # Malware typically needs to write files to persist
+            # A read only filesystem stops that entirely
+            readOnlyRootFilesystem: true
+
+            # Prevent privilege escalation
+            # Even if an attacker finds a setuid binary they cannot use it
+            # to gain more privileges than they started with
+            allowPrivilegeEscalation: false
+
+            # Drop ALL Linux capabilities
+            # Linux capabilities are fine-grained root permissions
+            # Things like binding to low ports, modifying network settings
+            # By dropping all of them the container can do almost nothing
+            # except run your application code
+            capabilities:
+              drop:
+                - ALL
+
+          # Resource limits prevent a compromised container from
+          # consuming the entire node's CPU and memory
+          # which would crash every other pod on that node
+          resources:
+            requests:
+              # Guaranteed minimum resources
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              # Hard ceiling - container gets killed if it exceeds this
+              memory: "128Mi"
+              cpu: "500m"
+
+          # Liveness probe - Kubernetes checks this endpoint every 10 seconds
+          # If it fails 3 times in a row Kubernetes kills and restarts the pod
+          # Catches situations where the app is running but frozen
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          # Readiness probe - Kubernetes checks this before sending traffic
+          # If it fails the pod is removed from the load balancer
+          # Traffic only goes to pods that are actually ready to serve it
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          # Mount a temporary writable directory
+          # The filesystem is read only but the app needs somewhere to write temp files
+          # /tmp is the standard location for temporary files
+          volumeMounts:
+            - name: tmp-dir
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp-dir
+          # emptyDir creates a temporary directory that lives as long as the pod
+          # When the pod is deleted the directory and all contents are deleted too
+          emptyDir: {}
+
+---
+# ─── SERVICE ───────────────────────────────────────────────────
+# A Service gives your pods a stable network address
+# Pods get new IP addresses every time they restart
+# The Service always points to whatever pods are currently running
+apiVersion: v1
+kind: Service
+metadata:
+  name: devsecops-app-service
+  namespace: default
+spec:
+  # LoadBalancer type tells AWS to create an Application Load Balancer
+  # This is what receives traffic from the internet and forwards it to pods
+  type: LoadBalancer
+  selector:
+    # Forward traffic to pods with this label
+    app: devsecops-app
+  ports:
+    - protocol: TCP
+      # Port 80 is what the load balancer listens on externally
+      port: 80
+      # Forward traffic to port 5000 where our Flask app is listening
+      targetPort: 5000
