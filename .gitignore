@@ -1,0 +1,24 @@
+# Terraform provider binaries - huge files downloaded automatically
+# Never commit these - they get downloaded fresh with terraform init
+.terraform/
+
+# Terraform state files contain sensitive information about your infrastructure
+# In production these live in an S3 backend, not in Git
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.lock.info
+
+# Terraform plan output files
+*.tfplan
+
+# Mac system files
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# ZAP scan working files
+zap_scan/
