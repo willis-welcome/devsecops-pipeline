@@ -1,4 +1,4 @@
-# AWS DevSecOps Security Pipeline
+# AWS DevSecOps Pipeline
 
 A production-grade, security-gated 8-stage CI/CD pipeline built on AWS and GitHub Actions. Every code change automatically passes through security checkpoints before anything reaches production. If any checkpoint fails, the pipeline stops and nothing deploys.
 
