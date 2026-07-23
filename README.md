@@ -18,14 +18,7 @@ This pipeline enforces automated security gates on every single commit. **No man
 
 ## Architecture & Flow Overview
 
-\`\`\`text
-[1. SonarCloud]  ──► [2. Checkov]        ──► [3. Terraform]       ──► [4. Syft & Grype]
- (SAST Code)          (IaC Security)          (AWS Infra & ECR)        (SBOM & CVE Scan)
-                                                                           │
-                                                                           ▼
-[8. Grafana]    ◄── [7. OWASP ZAP]     ◄── [6. K8s Deploy]      ◄── [5. Docker Push]
- (Observability)     (DAST Live Attack)      (Hardened Workload)      (ECR via OIDC)
-\`\`\`
+GitHub Push → SonarCloud → Checkov → Terraform → Syft & Grype → Docker Push → K8s Deploy → OWASP ZAP → Prometheus/Grafana
 
 > **Pipeline Rule:** Every stage must pass before the next one begins. A single tool failure halts the entire workflow downstream.
 
