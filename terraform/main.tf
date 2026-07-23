@@ -279,6 +279,28 @@ resource "aws_iam_role_policy" "flow_logs" {
   })
 }
 
+# ─── ECR REPOSITORY ────────────────────────────────────────────
+# Private container registry to store application Docker images
+resource "aws_ecr_repository" "main" {
+  name                 = "${var.project_name}-repo"
+  image_tag_mutability = "MUTABLE"
+
+  # AWS native vulnerability scan on push
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  # Encrypts image layers at rest with your custom KMS key
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.main.arn
+  }
+
+  tags = {
+    Name = "${var.project_name}-ecr"
+  }
+}
+
 # ─── EKS CLUSTER ───────────────────────────────────────────────
 # The managed Kubernetes control plane
 # AWS runs and maintains the brain of Kubernetes
