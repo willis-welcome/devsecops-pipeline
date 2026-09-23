@@ -478,6 +478,7 @@ resource "aws_iam_role" "app_pod" {
 # Runtime threat detection for your EKS cluster
 # Watches for suspicious container behavior 24/7
 resource "aws_guardduty_detector" "main" {
+  # checkov:skip=CKV2_AWS_3:Single-account environment; org-level GuardDuty requires AWS Organizations
   enable = true
 }
 
@@ -489,9 +490,10 @@ resource "aws_guardduty_detector_feature" "eks_runtime" {
 }
 
 # ─── S3 BUCKET (keeping from before) ──────────────────────────
-# checkov:skip=CKV_AWS_144: Log bucket is a replication destination not a source
-# checkov:skip=CKV2_AWS_62: Log bucket notifications not required for access logs
 resource "aws_s3_bucket" "app_bucket" {
+  # checkov:skip=CKV_AWS_144:Single-region demo; cross-region DR replication is a documented production gap
+  # checkov:skip=CKV2_AWS_62:No downstream consumer for bucket events
+  # checkov:skip=CKV_AWS_18:API activity audited via CloudTrail; a log bucket would cascade the same findings
   bucket = "${var.project_name}-pipeline-app-bucket"
 }
 
