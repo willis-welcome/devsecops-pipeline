@@ -25,9 +25,6 @@ data "aws_caller_identity" "current" {}
 # us-east-2 has us-east-2a, us-east-2b, us-east-2c
 # We spread our infrastructure across them so if one datacenter fails
 # our application keeps running in the others
-data "aws_availability_zones" "available" {
-  state = "available"
-}
 
 # ─── KMS KEY ───────────────────────────────────────────────────
 # Our own encryption key for S3 and Kubernetes secrets
@@ -67,6 +64,26 @@ resource "aws_kms_key_policy" "main" {
           "kms:Decrypt"
         ]
         Resource = "*"
+      },
+      {
+        Sid    = "Allow CloudWatch Logs to use this key"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${var.region}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
+          }
+        }
       }
     ]
   })
@@ -87,6 +104,11 @@ resource "aws_vpc" "main" {
   tags = {
     Name = "${var.project_name}-vpc"
   }
+}
+
+# Strip all rules from the VPC's default security group
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.main.id
 }
 
 # ─── INTERNET GATEWAY ──────────────────────────────────────────
@@ -113,7 +135,7 @@ resource "aws_subnet" "public" {
 
   # element() picks from the list based on count index
   # So first subnet gets us-east-2a, second gets us-east-2b
-  availability_zone = element(data.aws_availability_zones.available.names, count.index)
+  availability_zone = var.availability_zones[count.index]
 
   # cidrsubnet() carves out a smaller network from our VPC range
   # 10.0.1.0/24 and 10.0.2.0/24 - each holds 256 addresses
@@ -121,7 +143,7 @@ resource "aws_subnet" "public" {
 
   # Automatically assign public IPs to resources in this subnet
   # Load balancers need public IPs to receive internet traffic
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false
 
   tags = {
     Name = "${var.project_name}-public-${count.index + 1}"
@@ -138,7 +160,7 @@ resource "aws_subnet" "private" {
   count = 2
 
   vpc_id            = aws_vpc.main.id
-  availability_zone = element(data.aws_availability_zones.available.names, count.index)
+  availability_zone = var.availability_zones[count.index]
 
   # Different IP ranges from public subnets
   # 10.0.11.0/24 and 10.0.12.0/24
@@ -239,9 +261,9 @@ resource "aws_flow_log" "main" {
 
 # CloudWatch log group where flow logs get stored
 resource "aws_cloudwatch_log_group" "flow_logs" {
-  name = "/aws/vpc/flow-logs/${var.project_name}"
-  # Keep logs for 30 days then delete them automatically
-  retention_in_days = 30
+  name              = "/aws/vpc/flow-logs/${var.project_name}"
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.main.arn
 }
 
 # IAM role that allows VPC to write flow logs to CloudWatch
@@ -268,13 +290,14 @@ resource "aws_iam_role_policy" "flow_logs" {
     Statement = [{
       Effect = "Allow"
       Action = [
-        "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents",
-        "logs:DescribeLogGroups",
         "logs:DescribeLogStreams"
       ]
-      Resource = "*"
+      Resource = [
+        aws_cloudwatch_log_group.flow_logs.arn,
+        "${aws_cloudwatch_log_group.flow_logs.arn}:*"
+      ]
     }]
   })
 }
@@ -354,7 +377,7 @@ resource "aws_eks_cluster" "main" {
 
   # Enable useful logging to CloudWatch
   # audit logs record every API call to Kubernetes - your K8s audit trail
-  enabled_cluster_log_types = ["api", "audit", "authenticator"]
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
 }
@@ -495,5 +518,23 @@ resource "aws_s3_bucket_versioning" "app_bucket" {
   bucket = aws_s3_bucket.app_bucket.id
   versioning_configuration {
     status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "app_bucket" {
+  bucket = aws_s3_bucket.app_bucket.id
+
+  rule {
+    id     = "expire-old-versions"
+    status = "Enabled"
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
 }

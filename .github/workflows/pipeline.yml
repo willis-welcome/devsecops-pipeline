@@ -15,10 +15,10 @@ jobs:
 
   # ─── SECRET SCAN ───────────────────────────────────────────────
   secret-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0 # full history so leaked secrets in past commits are caught
 
@@ -29,11 +29,11 @@ jobs:
 
   # ─── IaC SECURITY SCAN ─────────────────────────────────────────
   iac-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: secret-scan
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@v12
@@ -43,11 +43,11 @@ jobs:
 
   # ─── SAST ──────────────────────────────────────────────────────
   sast-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: iac-scan
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -65,11 +65,11 @@ jobs:
 
   # ─── DAST ──────────────────────────────────────────────────────
   dast-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: sast-scan
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Start application
         run: docker compose up -d --build
@@ -101,11 +101,11 @@ jobs:
 
   # ─── SBOM + CVE SCAN ───────────────────────────────────────────
   sbom-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: dast-scan
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build image
         run: docker build -t devsecops-app:scan ./app
@@ -134,11 +134,11 @@ jobs:
   # Runs before build-push because Terraform creates the ECR repository
   terraform-provision:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: sbom-scan
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -166,11 +166,11 @@ jobs:
   # ─── BUILD AND PUSH TO ECR (manual only) ───────────────────────
   build-push:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: terraform-provision
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -202,11 +202,11 @@ jobs:
   # EKS API endpoint is private: this job requires a runner with VPC access
   k8s-deploy:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-push
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -236,7 +236,7 @@ jobs:
   # ─── MONITORING (manual only) ──────────────────────────────────
   monitoring:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: k8s-deploy
     steps:
       - name: Configure AWS credentials via OIDC

@@ -41,3 +41,9 @@ variable "node_count" {
   type        = number
   default     = 2
 }
+
+variable "availability_zones" {
+  description = "Pinned AZs so the subnet layout never changes silently"
+  type        = list(string)
+  default     = ["us-east-2a", "us-east-2b"]
+}
