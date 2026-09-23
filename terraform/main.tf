@@ -33,8 +33,8 @@ data "aws_availability_zones" "available" {
 # Our own encryption key for S3 and Kubernetes secrets
 # We control this key - we decide who can use it
 resource "aws_kms_key" "main" {
-  description             = "KMS key for ${var.project_name} encryption"
-  enable_key_rotation     = true
+  description         = "KMS key for ${var.project_name} encryption"
+  enable_key_rotation = true
 }
 
 resource "aws_kms_alias" "main" {
@@ -208,7 +208,7 @@ resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
 
   route {
-    cidr_block     = "0.0.0.0/0"
+    cidr_block = "0.0.0.0/0"
     # Send through NAT - not the internet gateway
     # This is what makes it private - outbound only
     nat_gateway_id = aws_nat_gateway.main.id
@@ -239,7 +239,7 @@ resource "aws_flow_log" "main" {
 
 # CloudWatch log group where flow logs get stored
 resource "aws_cloudwatch_log_group" "flow_logs" {
-  name              = "/aws/vpc/flow-logs/${var.project_name}"
+  name = "/aws/vpc/flow-logs/${var.project_name}"
   # Keep logs for 30 days then delete them automatically
   retention_in_days = 30
 }
@@ -280,17 +280,15 @@ resource "aws_iam_role_policy" "flow_logs" {
 }
 
 # ─── ECR REPOSITORY ────────────────────────────────────────────
-# Private container registry to store application Docker images
+# Private registry for pipeline-scanned images
 resource "aws_ecr_repository" "main" {
-  name                 = "${var.project_name}-repo"
-  image_tag_mutability = "MUTABLE"
+  name                 = "${var.project_name}-app"
+  image_tag_mutability = "IMMUTABLE"
 
-  # AWS native vulnerability scan on push
   image_scanning_configuration {
     scan_on_push = true
   }
 
-  # Encrypts image layers at rest with your custom KMS key
   encryption_configuration {
     encryption_type = "KMS"
     kms_key         = aws_kms_key.main.arn
@@ -340,7 +338,7 @@ resource "aws_eks_cluster" "main" {
       aws_subnet.public[*].id
     )
     # Block direct public access to the Kubernetes API server
-    endpoint_public_access  = true
+    endpoint_public_access  = false
     endpoint_private_access = true
   }
 
@@ -428,7 +426,7 @@ resource "aws_eks_node_group" "main" {
 # First enable the OIDC provider for EKS
 # Same concept as GitHub OIDC - lets Kubernetes pods request AWS credentials
 data "aws_iam_openid_connect_provider" "eks" {
-  url = aws_eks_cluster.main.identity[0].oidc[0].issuer
+  url        = aws_eks_cluster.main.identity[0].oidc[0].issuer
   depends_on = [aws_eks_cluster.main]
 }
 

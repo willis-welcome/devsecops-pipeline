@@ -65,7 +65,7 @@ spec:
           # Your image from ECR - using the commit SHA as the tag
           # Replace COMMIT_SHA with the actual SHA from your last pipeline run
           # You can find it in the Actions tab on GitHub
-          image: 050002895805.dkr.ecr.us-east-2.amazonaws.com/devsecops-app:fc53e448d4840f436b113b8e60e5f1667cfb43e7
+          image: 050002895805.dkr.ecr.us-east-2.amazonaws.com/devsecops-app:latest
 
           ports:
             - containerPort: 5000

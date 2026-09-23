@@ -4,34 +4,47 @@ on:
   push:
     branches:
       - main
+  # Infrastructure changes only run when manually triggered
+  workflow_dispatch:
 
-# Gives the pipeline permission to write to the repository
-# ZAP needs this to post its scan results as a GitHub issue
 permissions:
   contents: read
-  issues: write
-  actions: write
   id-token: write
 
 jobs:
 
-  # ─── STAGE 1 — CHECKOV IaC SECURITY SCAN ──────────────────────
-  checkov-scan:
+  # ─── SECRET SCAN ───────────────────────────────────────────────
+  secret-scan:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so leaked secrets in past commits are caught
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── IaC SECURITY SCAN ─────────────────────────────────────────
+  iac-scan:
+    runs-on: ubuntu-latest
+    needs: secret-scan
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@v12
         with:
           directory: terraform
           framework: terraform
 
-  # ─── STAGE 2 — SONARCLOUD SAST ─────────────────────────────────
-  sonarcloud-scan:
+  # ─── SAST ──────────────────────────────────────────────────────
+  sast-scan:
     runs-on: ubuntu-latest
-    needs: checkov-scan
+    needs: iac-scan
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -50,39 +63,29 @@ jobs:
             -Dsonar.sources=app
             -Dsonar.python.version=3.11
 
- # ─── STAGE 3 — OWASP ZAP DAST ──────────────────────────────────
-  zap-scan:
+  # ─── DAST ──────────────────────────────────────────────────────
+  dast-scan:
     runs-on: ubuntu-latest
-    needs: sonarcloud-scan
+    needs: sast-scan
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Build and start the application in the background
       - name: Start application
         run: docker compose up -d --build
 
-      # Wait until the app is actually responding before ZAP attacks it
       - name: Wait for app to be ready
         run: |
-          echo "Waiting for application to start..."
           for i in {1..30}; do
             if curl -s http://localhost:5000/health > /dev/null; then
               echo "Application is ready"
               break
             fi
-            echo "Attempt $i - waiting..."
             sleep 2
           done
 
-      # Run ZAP directly as a Docker container instead of using the action
-      # This avoids the artifact naming bug in the ZAP GitHub Action
-      # docker run pulls the ZAP image and runs a baseline scan against our app
-      # --network host means ZAP can reach localhost:5000 where our app is running
-      # -t is the target URL
-      # -r is the output report filename
-      # -I means only fail on high severity findings not warnings
-      - name: Run OWASP ZAP Scan
+      # Run ZAP as a container directly to avoid the action's artifact naming bug
+      - name: Run OWASP ZAP baseline scan
         run: |
           docker run --network host \
             ghcr.io/zaproxy/zaproxy:stable \
@@ -92,170 +95,77 @@ jobs:
             -I
         continue-on-error: true
 
-      # Stop and remove all containers after the scan
       - name: Stop application
-        run: docker compose down
         if: always()
-        # ─── STAGE 4 — SYFT SBOM AND GRYPE CVE SCAN ───────────────────
+        run: docker compose down
+
+  # ─── SBOM + CVE SCAN ───────────────────────────────────────────
   sbom-scan:
     runs-on: ubuntu-latest
-    # Only starts after ZAP passes
-    needs: zap-scan
+    needs: dast-scan
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 1 - Build the Docker image so Syft can inspect it
-      # Syft needs the actual built image to generate the ingredient list
-      # -t tags the image with a name so we can reference it
-      - name: Build Docker image
-        run: docker build -t devsecops-app:latest ./app
+      - name: Build image
+        run: docker build -t devsecops-app:scan ./app
 
-      # Step 2 - Install Syft
-      # Syft is made by Anchore - a container security company
-      # This curl command downloads and installs Syft in one line
-      - name: Install Syft
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-
-      # Step 3 - Generate the SBOM
-      # Syft scans the container image and lists every library inside it
-      # -o spdx-json outputs in SPDX format - the US government standard format
-      # SPDX stands for Software Package Data Exchange
-      # The result is saved to sbom.json
-      - name: Generate SBOM with Syft
-        run: syft devsecops-app:latest -o spdx-json > sbom.json
-
-      # Step 4 - Install Grype
-      # Grype is also made by Anchore - it reads SBOMs and checks for CVEs
-      - name: Install Grype
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-
-      # Step 5 - Scan the SBOM for known vulnerabilities
-      # Grype reads sbom.json and checks every package against CVE databases
-      # --fail-on critical means only fail the pipeline on critical CVEs
-      # High and medium vulnerabilities get reported but don't stop the pipeline
-      # In a stricter environment you'd set --fail-on high
-      - name: Scan SBOM with Grype
+      - name: Install Syft and Grype
         run: |
-          # --fail-on critical means only stop the pipeline for critical severity
-          # --only-fixed means ignore CVEs that have no patch available yet
-          # This is standard practice - you cannot fix what has no fix
-          # The SBOM artifact still records everything for compliance purposes
-          grype sbom:./sbom.json --fail-on critical --only-fixed
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
-      # Step 6 - Save the SBOM as a pipeline artifact
-      # This stores sbom.json so you can download and review it after the pipeline runs
-      # In federal environments you are required to store and share this file
-      - name: Upload SBOM artifact
+      # SPDX is the SBOM format expected in federal environments
+      - name: Generate SBOM
+        run: syft devsecops-app:scan -o spdx-json > sbom.json
+
+      # Fail on fixable critical CVEs; unfixable ones stay recorded in the SBOM
+      - name: Scan SBOM for CVEs
+        run: grype sbom:./sbom.json --fail-on critical --only-fixed
+
+      - name: Upload SBOM
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sbom-report
           path: sbom.json
-        # Always upload even if Grype found something
-        if: always()
-        # ─── STAGE 5 — DOCKER BUILD AND PUSH TO ECR ───────────────────
-  docker-build-push:
+
+  # ─── TERRAFORM PROVISION (manual only) ─────────────────────────
+  # Runs before build-push because Terraform creates the ECR repository
+  terraform-provision:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    # Only starts after SBOM scan passes
     needs: sbom-scan
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 1 - Authenticate to AWS using OIDC
-      # This is where the magic happens - no credentials stored anywhere
-      # GitHub sends a signed token to AWS proving who we are
-      # AWS verifies it and returns temporary credentials that expire in 15 minutes
-      - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          # The role we created - GitHub will assume this role
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          # The region where our ECR repository lives
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      # Step 2 - Log into ECR
-      # Before we can push an image we need to authenticate Docker to ECR
-      # This command gets a temporary password from AWS and logs Docker in
-      # The password expires after 12 hours
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # Step 3 - Build the Docker image and push it to ECR
-      # We tag the image with the Git commit SHA
-      # github.sha is the unique identifier of the exact commit that triggered this pipeline
-      # Using the commit SHA as the tag means every image is traceable back to exact code
-      # This is immutable - that SHA tag can never be overwritten in ECR
-      - name: Build and push Docker image
-        env:
-          # ECR registry URL comes from the login step above
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          # The name of our ECR repository
-          ECR_REPOSITORY: devsecops-app
-          # The commit SHA becomes the image tag
-          # Every build produces a uniquely tagged image
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          # Build the image from our Dockerfile
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
-
-          # Push the tagged image to ECR
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-          # Print the full image URI so we can see exactly what was pushed
-          echo "Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-
-      # Step 4 - Verify the image exists in ECR
-      # This confirms the push actually worked
-      # aws ecr describe-images queries ECR and returns metadata about the image
-      - name: Verify image in ECR
-        run: |
-          aws ecr describe-images \
-            --repository-name devsecops-app \
-            --region us-east-2
-          # ─── STAGE 6 — TERRAFORM PROVISIONS EKS ───────────────────────
-  terraform-provision:
-    runs-on: ubuntu-latest
-    needs: docker-build-push
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Authenticate to AWS using OIDC - same as Stage 5
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # Install Terraform on the GitHub Actions runner
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.14.8"
 
-      # Initialize Terraform - downloads the AWS provider
       - name: Terraform Init
         working-directory: terraform
         run: terraform init
 
-      # Show what Terraform plans to do - logged for audit purposes
-      # In a real environment a senior engineer reviews this output
-      # before apply is ever run
       - name: Terraform Plan
         working-directory: terraform
-        run: terraform plan
+        run: terraform plan -out=tfplan
 
-      # Apply the infrastructure changes
-      # In production this would require manual approval
-      # We use auto-approve here for the portfolio demo
       - name: Terraform Apply
         working-directory: terraform
-        run: terraform apply -auto-approve
+        run: terraform apply -auto-approve tfplan
 
-  # ─── STAGE 7 — KUBERNETES HARDENED DEPLOYMENT ──────────────────
-  k8s-deploy:
+  # ─── BUILD AND PUSH TO ECR (manual only) ───────────────────────
+  build-push:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: terraform-provision
     steps:
@@ -268,68 +178,32 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # Install kubectl - the command line tool for talking to Kubernetes
-      # kubectl sends commands to the EKS control plane
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      # Configure kubectl to talk to our EKS cluster
-      # This downloads the cluster credentials and saves them to ~/.kube/config
-      # After this step kubectl knows which cluster to talk to
-      - name: Configure kubectl for EKS
+      # Commit SHA tag makes every image traceable to the exact code that built it
+      - name: Build and push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: devsecops-app
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          aws eks update-kubeconfig \
-            --name devsecops-cluster \
-            --region us-east-2
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      # Get the latest image tag from ECR
-      # We use the most recently pushed image
-      - name: Get latest image tag
-        id: get-image
+      - name: Verify image in ECR
         run: |
-          # Query ECR for the most recently pushed image tag
-          IMAGE_TAG=$(aws ecr describe-images \
+          aws ecr describe-images \
             --repository-name devsecops-app \
-            --region us-east-2 \
-            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
-            --output text)
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "Latest image tag: $IMAGE_TAG"
+            --image-ids imageTag=${{ github.sha }}
 
-      # Update the deployment manifest with the real image tag
-      # sed is a command line text replacement tool
-      # It replaces the word 'latest' in our yaml with the actual commit SHA
-      - name: Update image tag in deployment
-        run: |
-          sed -i "s|:latest|:${{ steps.get-image.outputs.IMAGE_TAG }}|g" \
-            k8s/deployment.yaml
-
-      # Apply the Kubernetes manifests to the cluster
-      # kubectl apply reads our deployment.yaml and creates/updates resources
-      # -f means read from a file
-      - name: Deploy to Kubernetes
-        run: kubectl apply -f k8s/deployment.yaml
-
-      # Wait for the deployment to finish rolling out
-      # Kubernetes does rolling updates - new pods start before old ones stop
-      # This command waits until all pods are running and healthy
-      # timeout 300 means wait up to 5 minutes before failing
-      - name: Wait for deployment
-        run: |
-          kubectl rollout status deployment/devsecops-app \
-            --timeout=300s
-
-      # Print the load balancer URL so we can access the app
-      - name: Get application URL
-        run: |
-          echo "Waiting for load balancer to get an address..."
-          sleep 30
-          kubectl get service devsecops-app-service
-
-  # ─── STAGE 8 — PROMETHEUS AND GRAFANA VIA HELM ─────────────────
-  monitoring:
+  # ─── KUBERNETES DEPLOY (manual only) ───────────────────────────
+  # EKS API endpoint is private: this job requires a runner with VPC access
+  k8s-deploy:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    needs: k8s-deploy
+    needs: build-push
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -341,19 +215,53 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
 
       - name: Configure kubectl for EKS
-        run: |
-          aws eks update-kubeconfig \
-            --name devsecops-cluster \
-            --region us-east-2
+        run: aws eks update-kubeconfig --name devsecops-cluster
 
-      # Install Helm - the package manager for Kubernetes
-      # Helm installs complex applications with a single command
-      # Instead of writing dozens of YAML files yourself
+      # Deploy the exact image built from this commit
+      - name: Set image tag
+        run: sed -i "s|:latest|:${{ github.sha }}|g" k8s/deployment.yaml
+
+      - name: Deploy
+        run: kubectl apply -f k8s/deployment.yaml
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/devsecops-app --timeout=300s
+
+      - name: Show service
+        run: kubectl get service devsecops-app-service
+
+  # ─── MONITORING (manual only) ──────────────────────────────────
+  monitoring:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: k8s-deploy
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
       - name: Install Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@v4
 
-      # Add the Prometheus community Helm chart  
-            
+      - name: Configure kubectl for EKS
+        run: aws eks update-kubeconfig --name devsecops-cluster
+
+      - name: Install Prometheus and Grafana
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            --wait
+
+      - name: Verify monitoring pods
+        run: kubectl get pods -n monitoring
