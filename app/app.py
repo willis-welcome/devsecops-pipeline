@@ -8,6 +8,15 @@ from flask import Flask, jsonify
 # __name__ tells Flask where to find resources relative to this file
 app = Flask(__name__)
 
+@app.after_request
+def set_security_headers(response):
+    # Fixes OWASP ZAP findings 10021, 10038, 10049, 10063, 90004
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    return response
 # This decorator tells Flask to run this function when someone visits /health
 # A health endpoint is standard in every production application
 # Kubernetes uses it to know if your app is running correctly
