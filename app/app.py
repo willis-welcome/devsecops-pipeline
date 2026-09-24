@@ -12,7 +12,7 @@ app = Flask(__name__)
 def set_security_headers(response):
     # Fixes OWASP ZAP findings 10021, 10038, 10049, 10063, 90004
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; form-action 'self'"
     response.headers["Cache-Control"] = "no-store"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
