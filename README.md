@@ -1,166 +1,260 @@
-# AWS DevSecOps Pipeline
+# AWS DevSecOps Security Pipeline
 
-A production-grade, security-gated 8-stage CI/CD pipeline built on AWS and GitHub Actions. Every code change automatically passes through security checkpoints before anything reaches production. If any checkpoint fails, the pipeline stops immediately, preventing insecure builds from reaching AWS.
-
----
-
-## Business Problem This Solves
-
-Traditional deployment workflows allow developers to push code directly to production without automated security validation. Security reviews often happen manually, infrequently, and after the fact. As a result:
-
-* Vulnerabilities reach production undetected.
-* Compliance findings surface during stressful audits instead of during development.
-* Remediation costs up to **100x more** to fix post-deployment compared to catching issues at the code stage.
-
-This pipeline enforces automated security gates on every single commit. **No manual steps. No human error. No way to bypass the gates.**
+A security-gated CI/CD pipeline on AWS and GitHub Actions. Every commit passes through automated security gates, infrastructure is defined in Terraform, and deployments to Amazon EKS only happen through a manually approved, credential-free workflow. Controls are mapped to NIST 800-53.
 
 ---
 
-## Architecture & Flow Overview
+## Scenario
 
-GitHub Push → SonarCloud → Checkov → Terraform → Syft & Grype → Docker Push → K8s Deploy → OWASP ZAP → Prometheus/Grafana
+A mid-sized SaaS company wants to sell to federal agencies, which requires **FedRAMP authorization**. As part of that effort, it is migrating its applications from manually managed servers to containers on Amazon EKS. A readiness assessment against **NIST 800-53** found gaps at every step of the release process:
 
-> **Pipeline Rule:** Every stage must pass before the next one begins. A single tool failure halts the entire workflow downstream.
+- **Secrets:** AWS access keys stored in repositories and CI tools
+- **Infrastructure:** cloud resources created by hand, with inconsistent encryption and some publicly exposed
+- **Code and dependencies:** no scanning of application code or third-party libraries, and no inventory of what is inside the containers
+- **Running application:** no testing of the live application for web vulnerabilities
+- **Deployments:** anyone with access could push to production, with no approval or audit trail
+- **Operations:** limited logging and no visibility into cluster health
 
----
+This pipeline closes each gap and produces the evidence an assessor needs.
 
-## AWS Infrastructure Provisioned
-
-* **VPC & Subnets:** Isolated network with public and private subnets distributed across 2 Availability Zones for high availability.
-* **NAT Gateway:** Ensures private subnet resources have outbound-only internet access while blocking direct incoming traffic.
-* **ECR:** Private container registry with immutable image tags, scan-on-push enabled, and custom KMS encryption at rest.
-* **EKS Cluster:** Kubernetes 1.32 control plane with KMS envelope encryption for Kubernetes Secrets.
-* **IRSA (IAM Roles for Service Accounts):** Fine-grained, least-privilege AWS access assigned per Pod rather than using shared worker node credentials.
-* **GuardDuty:** Continuous, 24/7 runtime threat detection monitoring EKS container workloads and API activity.
-* **VPC Flow Logs:** Complete network access and traffic audit trail delivered directly to CloudWatch Logs with a 30-day retention policy.
-* **KMS:** Customer Managed Keys (CMK) configured with automatic annual rotation controlling all data encryption.
-* **OIDC:** Keyless authentication integration allowing GitHub Actions to assume temporary AWS IAM roles per pipeline run without storing long-lived static credentials.
-
----
-
-## Pipeline Stages
-
-### Stage 1 — SonarCloud (SAST)
-
-* **What it does:** Performs Static Application Security Testing on application source code before execution. Detects injection flaws, insecure functions, hardcoded secrets, and OWASP Top 10 vulnerabilities.
-* **Security Concept:** *Shift-Left Code Security.* Finds code-level flaws early when they are easiest and cheapest to remediate.
-
-### Stage 2 — Checkov (IaC Scan)
-
-* **What it does:** Scans all Terraform code (`.tf` files) prior to provisioning cloud infrastructure. Ensures blueprints adhere to security standards (e.g., public access blocks, KMS key policies, logging enabled).
-* **Security Concept:** *Preventative Infrastructure Security.* Guarantees misconfigurations never reach the live cloud environment.
-
-### Stage 3 — Terraform (Infra & ECR Provisioning)
-
-* **What it does:** Provisions all required AWS infrastructure as code — VPC, KMS keys, ECR repository, EKS cluster, IRSA policies, GuardDuty, and CloudWatch log groups.
-* **Security Concept:** *Declarative & Auditable Infrastructure.* Every cloud setting is explicitly defined, version-controlled, and peer-reviewed in Git.
-
-### Stage 4 — Syft SBOM + Grype CVE Scan
-
-* **What it does:** Syft generates a Software Bill of Materials (SBOM) listing every component, dependency, and base image layer. Grype scans this SBOM against vulnerability databases and breaks the build if critical unpatched CVEs are discovered.
-* **Security Concept:** *Software Supply Chain Protection.* Automatically catches zero-days and third-party dependency vulnerabilities (like Log4Shell) prior to building release artifacts.
-
-### Stage 5 — Docker Build & Push to ECR
-
-* **What it does:** Builds the application container image, tags it with the Git commit SHA, and pushes it to AWS ECR via OIDC passwordless authentication.
-* **Security Concept:** *Immutable & Authenticated Artifacts.* Uses short-lived AWS tokens. Image tags are immutable, ensuring the exact scanned image artifact is what reaches production.
-
-### Stage 6 — Kubernetes Hardened Deployment
-
-* **What it does:** Deploys the application image to EKS applying strict Pod Security Standards:
-  * `runAsNonRoot: true` — Blocks execution as administrative root.
-  * `readOnlyRootFilesystem: true` — Prevents runtime file modifications, neutering malware persistence.
-  * `allowPrivilegeEscalation: false` — Blocks processes from gaining additional system rights.
-  * `capabilities: drop: ["ALL"]` — Removes dangerous Linux kernel capabilities.
-  * `Resource limits` — Prevents noisy neighbor issues or Denial of Service (DoS) from resource exhaustion.
-* **Security Concept:** *Defense-in-Depth.* Operates on zero-trust assumptions inside the cluster, neutering exploit capabilities even if an attacker gains code execution.
-
-### Stage 7 — OWASP ZAP (DAST)
-
-* **What it does:** Executes Dynamic Application Security Testing against the live, running web application endpoint in EKS. Attacks the application externally, testing for cross-site scripting (XSS), SQL injection, missing HTTP security headers, and cookie flaws.
-* **Security Concept:** *Black-box Runtime Validation.* Uncovers configuration and environment-specific security bugs that static code analysis cannot see.
-
-### Stage 8 — Prometheus & Grafana Observability
-
-* **What it does:** Deploys a full monitoring stack to the cluster via Helm. Prometheus scrapes container and cluster metrics every 15 seconds, driving Grafana visual dashboards for operational and security monitoring.
-* **Security Concept:** *Continuous Security Observability.* Real-time metrics allow immediate identification of abnormal CPU/RAM spikes, elevated error rates, or suspicious traffic spikes that signal an ongoing attack.
+| Gap | Solution | NIST 800-53 |
+|---|---|---|
+| Keys in repositories | Gitleaks secret scanning, OIDC with no stored credentials | IA-5 |
+| Hand-built, misconfigured infrastructure | Terraform, Checkov IaC scanning | CM-2, CM-6 |
+| Unscanned code and dependencies | SonarCloud SAST, Syft SBOM, Grype CVE scanning | RA-5, SA-11, CM-8 |
+| Untested running application | OWASP ZAP DAST | SA-11 |
+| Uncontrolled deployments | Manual approval gate, immutable image tags | CM-3 |
+| Exposed or unencrypted resources | Private EKS endpoint, KMS encryption, IRSA | SC-7, SC-28, AC-6 |
+| No logging or visibility | VPC Flow Logs, EKS control plane logs, Prometheus/Grafana | AU-2, AU-11, SI-4 |
 
 ---
 
-## Security Findings Remediated
+## Architecture
 
-| Tool | Findings Cleared | Examples of Remediations Applied |
-| --- | --- | --- |
-| **Checkov** | **9** | Added KMS encryption to S3/ECR/EKS, enforced public access blocks, enabled bucket versioning, added missing KMS key policies. |
-| **SonarCloud** | **4** | Applied HTTPS-only bucket policies, configured access logging, replaced insecure GitHub action references. |
-| **Grype** | **12+** | Upgraded outdated Python base image dependencies patching severe CVEs in `gunicorn`, `flask`, `pip`, and `wheel`. |
+**Every commit — security gates (no cloud resources, no cost):**
 
----
+```
+Gitleaks → Checkov → SonarCloud → OWASP ZAP → Syft/Grype
+ secrets     IaC        SAST         DAST       SBOM + CVE
+```
 
-## Tools & Security Stack Summary
+**Manual deploy — `workflow_dispatch` only:**
 
-| Security Layer | Tools Utilized |
-| --- | --- |
-| **Pipeline Automation** | GitHub Actions, OIDC Authentication |
-| **Static Analysis** | SonarCloud (SAST), Checkov (IaC) |
-| **Supply Chain / CVE** | Syft (SBOM), Grype (Vulnerability Scanner) |
-| **Container & Infra** | Docker, AWS ECR, Terraform |
-| **Orchestration** | AWS EKS, Helm |
-| **Runtime Protection** | OWASP ZAP (DAST), AWS GuardDuty, IRSA |
-| **Observability** | AWS CloudWatch, Prometheus, Grafana |
+```
+Terraform Provision → Build & Push to ECR → Kubernetes Deploy → Prometheus/Grafana
+```
+
+Each job depends on the one before it. A failed gate stops everything downstream. Infrastructure changes never run automatically on a push; they require a deliberate, manually triggered deploy.
 
 ---
 
-## How to Run
+## Pipeline
 
-### Prerequisites
+### Security gates (every commit)
 
-1. An active AWS Account with IAM permissions to manage VPC, EKS, KMS, and ECR.
-2. A GitHub Repository with Actions enabled.
-3. A SonarCloud Account connected to your repository.
+**Secret Scan — Gitleaks**
+Scans the full Git history, not just the latest commit, for hardcoded credentials, tokens, and keys.
+*Why first:* a leaked secret is exposed the moment it is pushed, so nothing else should run until history is clean.
 
-### GitHub Secrets Required
+**IaC Scan — Checkov**
+Scans Terraform code for misconfigurations such as public access, missing encryption, over-broad IAM, and disabled logging.
+*Why before Terraform:* Checkov reads code, not live infrastructure. Misconfigurations are caught before they exist in AWS.
 
-| Secret Name | Description |
-| --- | --- |
-| `AWS_ROLE_ARN` | The IAM Role ARN configured for OIDC federation with GitHub Actions. |
-| `AWS_REGION` | The targeted AWS region (e.g., `us-east-2`). |
-| `SONAR_TOKEN` | Authentication token generated from SonarCloud. |
+**SAST — SonarCloud**
+Static analysis of application source code for injection flaws, insecure functions, and code-quality issues.
 
-### Deployment
+**DAST — OWASP ZAP**
+Starts the application in an ephemeral container on the runner and scans it from the outside for missing security headers, cookie flaws, and common web vulnerabilities. The HTML report is saved as a pipeline artifact.
+*Design note:* this is a pre-deploy scan that gates the release. In production, a second post-deploy scan against staging would test the real network path.
 
-Push any change to the `main` branch. The pipeline triggers automatically and executes all 8 stages sequentially.
+**SBOM and CVE Scan — Syft and Grype**
+Syft generates a Software Bill of Materials in SPDX format listing every package in the image. Grype scans it and fails the build on fixable critical CVEs. Unfixable CVEs remain documented in the SBOM, which is stored as an artifact.
 
-### Teardown Infrastructure
+### Deployment (manual only)
 
-To avoid incurring unnecessary AWS costs, run:
+**Terraform Provision**
+Provisions the VPC, subnets, NAT Gateway, KMS, ECR, EKS, IAM, IRSA, GuardDuty, S3, and logging. The plan is saved and the exact reviewed plan is applied.
+*Why before build and push:* Terraform creates the ECR repository the image is pushed to.
 
-\`\`\`bash
+**Build and Push to ECR**
+Authenticates to AWS with OIDC, builds the image, tags it with the Git commit SHA, pushes it to ECR, and verifies the pushed tag exists.
+
+**Kubernetes Deploy**
+Deploys the exact image built from the commit to EKS and waits for a successful rollout.
+
+**Monitoring**
+Installs Prometheus and Grafana with the `kube-prometheus-stack` Helm chart.
+
+---
+
+## AWS Infrastructure
+
+| Component | Configuration |
+|---|---|
+| VPC | Public and private subnets across 2 pinned Availability Zones |
+| Default security group | All rules removed (deny-all) |
+| NAT Gateway | Outbound-only internet access for private subnets |
+| EKS | Private API endpoint, KMS envelope encryption for Secrets, all 5 control plane log types |
+| EKS node group | Managed nodes in private subnets only |
+| IRSA | Per-pod IAM roles via OIDC instead of shared node credentials |
+| ECR | Immutable tags, scan on push, KMS encryption |
+| KMS | Customer-managed key with automatic rotation |
+| VPC Flow Logs | All traffic to CloudWatch, KMS-encrypted, 365-day retention |
+| GuardDuty | EKS runtime monitoring enabled |
+| S3 | KMS encryption, versioning, public access blocked, lifecycle rules |
+| Terraform state | Remote S3 backend, encrypted, with state locking |
+| GitHub to AWS | OIDC federation with short-lived credentials |
+
+---
+
+## Security Audit
+
+The pipeline was originally built with AI assistance, then audited line by line against NIST 800-53. The audit found real issues:
+
+| Finding | Risk | Fix | NIST |
+|---|---|---|---|
+| EKS API endpoint publicly accessible, contradicting its own code comment | Control plane exposed to the internet | Endpoint set to private only | SC-7, AC-17 |
+| ECR tags mutable | A scanned image could be silently replaced | Tags set to immutable | CM-3 |
+| Terraform state stored only locally | No locking, no backup, no audit trail | Encrypted S3 backend with locking | CM-3 |
+| Deploy stage ran before the Terraform stage that creates ECR | Pipeline fails on a fresh environment | Reordered: Terraform before build and push | CM-3 |
+| Infrastructure deployed automatically on every push | Unreviewed changes reach AWS | Deploy jobs gated behind manual trigger | CM-3 |
+| No secret scanning | Leaked credentials go undetected | Gitleaks added as the first gate | IA-5 |
+| ZAP scan erroring while the job reported success | DAST gate silently not running | Fixed report volume and permissions | SA-11 |
+| Pipeline permissions broader than needed | Excess token scope | Reduced to `contents: read`, `id-token: write` | AC-6 |
+| Third-party actions referenced by `@master` | Unreviewed upstream changes run in the pipeline | Pinned to versioned releases | SA-12 |
+
+---
+
+## Scan Results
+
+**Gitleaks:** full Git history scanned, no secrets found.
+
+**Checkov:** 14 findings — **10 remediated, 4 risk-accepted**.
+
+| Remediated | NIST |
+|---|---|
+| Public subnets no longer auto-assign public IPs | SC-7 |
+| Default security group locked to deny-all | SC-7 |
+| All 5 EKS control plane log types enabled | AU-2, AU-12 |
+| Flow log retention increased from 30 to 365 days | AU-11 |
+| Flow log group encrypted with KMS | SC-28 |
+| Flow log IAM policy scoped from `*` to its own log group | AC-6 |
+| S3 lifecycle rules for old versions and incomplete uploads | SI-12 |
+| Availability Zones pinned instead of looked up dynamically | CM-2 |
+
+| Risk-accepted | Justification |
+|---|---|
+| S3 cross-region replication | Single-region demo; DR replication documented as a production gap |
+| S3 event notifications | No downstream consumer for bucket events |
+| S3 access logging | API activity audited via CloudTrail; a log bucket would cascade the same findings |
+| GuardDuty organization configuration | Single-account environment without AWS Organizations |
+
+Risk acceptances are documented inline with `checkov:skip` justifications, the code-level equivalent of POA&M entries.
+
+**OWASP ZAP:** **5 warnings → 1**, 0 failures. Missing HTTP security headers were added through a Flask `after_request` hook so every response, including error pages, is covered. The remaining informational finding confirms responses are non-cacheable, which is intended.
+
+**Grype:** fixable CVEs in `gunicorn`, `flask`, `pip`, and `wheel` were patched by upgrading dependencies. The pipeline fails on fixable critical CVEs; unfixable OS-level findings remain recorded in the SBOM.
+
+---
+
+## Troubleshooting Log
+
+| Problem | Root cause | Resolution |
+|---|---|---|
+| Checkov failed on log bucket and SNS configuration | Missing encryption, logging, and public access controls | Remediated findings; added justified skips where a rule did not apply |
+| SonarCloud scan conflicted with SonarCloud | Automatic analysis and CI analysis both enabled | Disabled automatic analysis and ran SAST through the pipeline |
+| ZAP report upload failed | Action artifact naming bug and missing permissions | Ran ZAP directly as a container |
+| Grype failed the build | Fixable CVEs in Python dependencies | Upgraded dependencies; scoped the gate to fixable criticals |
+| ECR push failed | OIDC trust and IAM permissions misconfigured | Corrected the role trust policy and `id-token: write` permission |
+| SAST failed months later | SonarCloud token expired | Rotated the token and migrated to `sonarqube-scan-action` |
+| Checkov failed with new findings months later | Code drift and newer Checkov policies | Triaged 14 findings: 10 fixed, 4 risk-accepted |
+| ZAP job green but scan not completing | `continue-on-error` masked ZAP exit code 3; report path not writable by the ZAP user | Mounted a writable output folder and uploaded the report as an artifact |
+| Merge conflict in `main.tf` during rebase | Local and remote versions both modified the ECR block | Resolved manually, keeping the hardened configuration |
+
+---
+
+## Key Decisions
+
+**Why OIDC instead of IAM access keys?**
+Long-lived keys are a leading cause of cloud breaches. OIDC issues short-lived credentials per pipeline run, so nothing is stored in GitHub.
+
+**Why immutable ECR tags?**
+A mutable tag can be overwritten, breaking the link between what was scanned and what runs. Immutable tags guarantee that link.
+
+**Why tag images with the commit SHA?**
+Every running image traces back to the exact code that built it.
+
+**Why a customer-managed KMS key?**
+It allows explicit control over who can decrypt Kubernetes secrets, image layers, logs, and state.
+
+**Why IRSA instead of node roles?**
+A node role gives every pod on that node the same permissions. IRSA gives each pod only what its workload needs.
+
+**Why a private EKS endpoint?**
+It removes the Kubernetes control plane from the public internet. The tradeoff: administration and deployment require network access to the VPC, such as a bastion, VPN, or self-hosted runner.
+
+**Why gate deployments behind a manual trigger?**
+Security scans should run on every change. Infrastructure changes should be deliberate and reviewed.
+
+**Why Checkov before Terraform?**
+Scanning code catches misconfigurations before they exist, which is cheaper and safer than finding them in a live environment.
+
+**Why drop all Linux capabilities in pods?**
+Even if a process is compromised, it cannot alter networking, mount filesystems, or make privileged kernel calls.
+
+---
+
+## Tools
+
+| Layer | Tools |
+|---|---|
+| Pipeline | GitHub Actions, OIDC |
+| Secret scanning | Gitleaks |
+| Static analysis | Checkov (IaC), SonarCloud (SAST) |
+| Dynamic analysis | OWASP ZAP |
+| Supply chain | Syft (SBOM), Grype (CVE) |
+| Infrastructure | Terraform, AWS VPC, EKS, ECR, KMS, IAM, GuardDuty, S3 |
+| Containers | Docker, Kubernetes, Helm |
+| Observability | CloudWatch, Prometheus, Grafana |
+
+---
+
+## Production Readiness Gaps
+
+| Gap | What production would add |
+|---|---|
+| Single environment | Separate dev, staging, and production state and accounts |
+| Deploy from GitHub-hosted runners | Self-hosted runner inside the VPC for the private EKS endpoint |
+| Single NAT Gateway | One NAT Gateway per Availability Zone |
+| No ingress or TLS | AWS Load Balancer Controller, ACM certificates, WAF |
+| Single-region S3 | Cross-region replication and a tested DR runbook |
+| Pre-deploy DAST only | Additional post-deploy scan against staging |
+| Personal SonarCloud token | Organization-scoped token not tied to an individual |
+| Metrics only | Alerting rules, SLOs, and log aggregation |
+
+---
+
+## Running It
+
+**Prerequisites:** an AWS account, a GitHub repository with Actions enabled, a SonarCloud project, an S3 bucket for Terraform state, and an IAM role trusted for GitHub OIDC.
+
+**GitHub secrets:**
+
+| Secret | Purpose |
+|---|---|
+| `AWS_ROLE_ARN` | IAM role assumed through OIDC |
+| `AWS_REGION` | Target region |
+| `SONAR_TOKEN` | SonarCloud authentication |
+
+**Security gates:** push to `main`.
+
+**Deploy:** Actions → DevSecOps Security Pipeline → **Run workflow**.
+
+**Teardown:**
+
+```bash
 cd terraform
-terraform destroy -auto-approve
-\`\`\`
+terraform destroy
+```
 
----
-
-## Key Architectural & Security Decisions
-
-> **Why OIDC over IAM Access Keys?**
-> Long-lived access keys are one of the leading causes of cloud breaches due to accidental commits or poor rotation habits. OIDC uses short-lived tokens generated per job execution that expire automatically. There are zero credentials stored in GitHub Secrets.
-
-> **Why Immutable ECR Tags?**
-> Mutable tags allow an attacker or broken pipeline to overwrite an existing image tag (e.g., `:latest`). Tag immutability ensures that once an image SHA passes security gates, it can never be overwritten or tampered with.
-
-> **Why KMS Customer-Managed Keys over Default Keys?**
-> Default AWS keys don't allow key policy customization or cross-account management. Customer-managed KMS keys allow precise control over who can decrypt Kubernetes secrets or ECR layers, meeting FedRAMP High and NIST 800-53 compliance standards.
-
-> **Why IRSA over Node-level IAM Roles?**
-> Node IAM roles grant every pod on a worker node the permissions assigned to that underlying EC2 instance. IRSA scopes access to specific Kubernetes ServiceAccounts, granting each Pod only the exact AWS permissions required for its workload.
-
-> **Why drop ALL Linux Capabilities in Kubernetes?**
-> Linux capabilities break root privilege into distinct capabilities. Dropping `ALL` capabilities ensures that even if a process inside a container is compromised, the attacker cannot modify network routing, mount filesystems, or make privileged kernel system calls.
-
----
-
-## Disclaimer
-
-*This pipeline was built independently to demonstrate Cloud Security Engineering, Infrastructure as Code, and DevSecOps capabilities. It is not connected to or derived from any client or employer work.*
+The full stack was provisioned and deployed, then torn down to avoid ongoing cost. Security gates continue to run on every commit.
