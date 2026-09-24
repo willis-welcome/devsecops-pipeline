@@ -1,4 +1,4 @@
-# AWS DevSecOps Security Pipeline
+# AWS DevSecOps Pipeline
 
 A security-gated CI/CD pipeline on AWS and GitHub Actions. Every commit passes through automated security gates, infrastructure is defined in Terraform, and deployments to Amazon EKS only happen through a manually approved, credential-free workflow. Controls are mapped to NIST 800-53.
 
@@ -248,7 +248,7 @@ Even if a process is compromised, it cannot alter networking, mount filesystems,
 
 **Security gates:** push to `main`.
 
-**Deploy:** Actions → DevSecOps Security Pipeline → **Run workflow**.
+**Deploy:** Actions → DevSecOps Pipeline → **Run workflow**.
 
 **Teardown:**
 
