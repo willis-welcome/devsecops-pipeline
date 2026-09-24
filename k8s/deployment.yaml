@@ -1,3 +1,4 @@
+# Hardened Kubernetes workload: IRSA service account, restricted pod security, and load balancer service
 # ─── SERVICE ACCOUNT ───────────────────────────────────────────
 # Linked to the IRSA role so the pod gets its own AWS identity
 apiVersion: v1

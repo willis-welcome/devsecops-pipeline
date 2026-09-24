@@ -1,3 +1,4 @@
+# AWS infrastructure for the DevSecOps pipeline: VPC, EKS, ECR, KMS, IAM, and logging
 # ─── PROVIDERS ─────────────────────────────────────────────────
 terraform {
   required_providers {
