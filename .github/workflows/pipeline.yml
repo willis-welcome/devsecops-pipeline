@@ -84,11 +84,14 @@ jobs:
             sleep 2
           done
 
-      # Run ZAP as a container directly to avoid the action's artifact naming bug
+      # ZAP runs as a non-root user; the folder must be writable for the report
+      - name: Prepare ZAP output folder
+        run: mkdir -p zap-output && chmod 777 zap-output
+
       - name: Run OWASP ZAP baseline scan
         run: |
           docker run --network host \
-            -v ${{ github.workspace }}:/zap/wrk:rw \
+            -v ${{ github.workspace }}/zap-output:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t http://localhost:5000 \
@@ -101,7 +104,11 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: zap-report
-          path: zap-report.html
+          path: zap-output/zap-report.html
+
+      - name: Stop application
+        if: always()
+        run: docker compose down
 
   # ─── SBOM + CVE SCAN ───────────────────────────────────────────
   sbom-scan:
