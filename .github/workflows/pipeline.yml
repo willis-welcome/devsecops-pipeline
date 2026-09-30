@@ -41,11 +41,11 @@ jobs:
           directory: terraform
           framework: terraform
 
-  # ─── SAST ──────────────────────────────────────────────────────
+    # ─── SAST ──────────────────────────────────────────────────────
   sast-scan:
-     runs-on: ubuntu-24.04
-     needs: iac-scan
-     steps:
+    runs-on: ubuntu-24.04
+    needs: iac-scan
+    steps:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
