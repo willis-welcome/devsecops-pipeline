@@ -21,16 +21,6 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 # ─── KMS ───────────────────────────────────────────────────────
-resource "aws_kms_key" "main" {
-  description         = "KMS key for ${var.project_name} encryption"
-  enable_key_rotation = true
-}
-
-resource "aws_kms_alias" "main" {
-  name          = "alias/${var.project_name}-key"
-  target_key_id = aws_kms_key.main.key_id
-}
-
 resource "aws_kms_key_policy" "main" {
   key_id = aws_kms_key.main.id
   policy = jsonencode({
@@ -77,6 +67,26 @@ resource "aws_kms_key_policy" "main" {
             "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
           }
         }
+      },
+      {
+        # Condition limits use to this account's trails
+        Sid       = "Allow CloudTrail to encrypt logs"
+        Effect    = "Allow"
+        Principal = { Service = "cloudtrail.amazonaws.com" }
+        Action    = "kms:GenerateDataKey*"
+        Resource  = "*"
+        Condition = {
+          StringLike = {
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"
+          }
+        }
+      },
+      {
+        Sid       = "Allow CloudTrail to describe the key"
+        Effect    = "Allow"
+        Principal = { Service = "cloudtrail.amazonaws.com" }
+        Action    = "kms:DescribeKey"
+        Resource  = "*"
       }
     ]
   })
