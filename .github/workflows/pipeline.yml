@@ -43,13 +43,23 @@ jobs:
 
   # ─── SAST ──────────────────────────────────────────────────────
   sast-scan:
-    runs-on: ubuntu-24.04
-    needs: iac-scan
-    steps:
+     runs-on: ubuntu-24.04
+     needs: iac-scan
+     steps:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run tests with coverage
+        run: |
+          pip install -r app/requirements.txt pytest pytest-cov
+          pytest tests/ --cov=app --cov-report=xml
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@v6
@@ -61,7 +71,9 @@ jobs:
             -Dsonar.projectKey=willis-welcome_devsecops-pipeline
             -Dsonar.organization=willis-welcome
             -Dsonar.sources=app
-            -Dsonar.python.version=3.11
+            -Dsonar.tests=tests
+            -Dsonar.python.version=3.13
+            -Dsonar.python.coverage.reportPaths=coverage.xml
 
   # ─── DAST ──────────────────────────────────────────────────────
   dast-scan:

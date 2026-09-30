@@ -25,5 +25,6 @@ def home():
     return jsonify({"message": "DevSecOps Pipeline Running"})
 
 
+# Local development only; in the container Gunicorn serves the app (see Dockerfile)
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="127.0.0.1", port=5000)

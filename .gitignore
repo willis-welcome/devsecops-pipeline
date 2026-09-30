@@ -23,4 +23,10 @@ __pycache__/
 # ZAP scan working files
 zap_scan/
 # AWS CLI installer - downloaded locally, not needed in repo
+AWSCLIV2.pkg.venv/
+.venv/
+.coverage
+coverage.xml
+.pytest_cache/
+__pycache__/
 AWSCLIV2.pkg
