@@ -16,7 +16,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip wheel && \
     pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy only the application code, never the whole build context
+COPY app.py .
 
 USER 1000
 
