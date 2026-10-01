@@ -34,7 +34,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
 
+      - name: Terraform format and validate
+        working-directory: terraform
+        run: |
+          terraform init -backend=false
+          terraform fmt -check
+          terraform validate
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@v12
         with:
