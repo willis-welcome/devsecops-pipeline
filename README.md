@@ -34,8 +34,8 @@ This pipeline closes each gap and produces the evidence an assessor needs.
 **Every commit — security gates (no cloud resources, no cost):**
 
 ```
-Gitleaks → Checkov → SonarCloud → OWASP ZAP → Syft/Grype
- secrets     IaC        SAST         DAST       SBOM + CVE
+Gitleaks → Terraform validate + Checkov → pytest + SonarCloud → OWASP ZAP → Syft/Grype
+ secrets            IaC                     tests + SAST          DAST       SBOM + CVE
 ```
 
 **Manual deploy — `workflow_dispatch` only:**
@@ -56,12 +56,13 @@ Each job depends on the one before it. A failed gate stops everything downstream
 Scans the full Git history, not just the latest commit, for hardcoded credentials, tokens, and keys.
 *Why first:* a leaked secret is exposed the moment it is pushed, so nothing else should run until history is clean.
 
-**IaC Scan — Checkov**
-Scans Terraform code for misconfigurations such as public access, missing encryption, over-broad IAM, and disabled logging.
+**IaC Scan — Terraform validate and Checkov**
+`terraform fmt -check` and `terraform validate` confirm the configuration is formatted and every reference resolves. Checkov then scans for misconfigurations such as public access, missing encryption, over-broad IAM, and disabled logging.
+*Why both:* Checkov checks security settings, not correctness. A deleted resource that others still reference passes Checkov but fails `validate`.
 *Why before Terraform:* Checkov reads code, not live infrastructure. Misconfigurations are caught before they exist in AWS.
 
-**SAST — SonarCloud**
-Static analysis of application source code for injection flaws, insecure functions, and code-quality issues.
+**Tests and SAST — pytest and SonarCloud**
+Unit tests run with coverage, then SonarCloud analyzes the application code and Dockerfile for vulnerabilities, security hotspots, and code quality. The SonarCloud Quality Gate requires an A security rating and at least 80% coverage on new code.
 
 **DAST — OWASP ZAP**
 Starts the application in an ephemeral container on the runner and scans it from the outside for missing security headers, cookie flaws, and common web vulnerabilities. The HTML report is saved as a pipeline artifact.
@@ -102,6 +103,8 @@ Installs Prometheus and Grafana with the `kube-prometheus-stack` Helm chart.
 | VPC Flow Logs | All traffic to CloudWatch, KMS-encrypted, 365-day retention |
 | GuardDuty | EKS runtime monitoring enabled |
 | S3 | KMS encryption, versioning, public access blocked, lifecycle rules |
+| CloudTrail | Multi-region trail, global service events, log file validation, KMS-encrypted |
+| CloudTrail log bucket | Dedicated bucket, TLS-only policy, write access limited to this account's trail, 1-year retention |
 | Terraform state | Remote S3 backend, encrypted, with state locking |
 | GitHub to AWS | OIDC federation with short-lived credentials |
 
@@ -122,6 +125,10 @@ The pipeline was originally built with AI assistance, then audited line by line 
 | ZAP scan erroring while the job reported success | DAST gate silently not running | Fixed report volume and permissions | SA-11 |
 | Pipeline permissions broader than needed | Excess token scope | Reduced to `contents: read`, `id-token: write` | AC-6 |
 | Third-party actions referenced by `@master` | Unreviewed upstream changes run in the pipeline | Pinned to versioned releases | SA-12 |
+| IRSA OIDC provider declared as a data source | IRSA fails in a new account because nothing creates the provider | Changed to a managed resource; trust policy also checks the token audience | AC-6, IA-5 |
+| KMS key and alias accidentally deleted, still passing Checkov | Every encrypted resource referenced a key that did not exist | Restored the key; added `terraform validate` to the IaC gate | CM-6 |
+| Checkov risk acceptance cited CloudTrail, but no trail existed | Justification pointed to a control that was not implemented | Added a multi-region CloudTrail | AU-2, AU-12 |
+| Container image ran as root by default | Relied only on Kubernetes to enforce non-root | Non-root user (UID 1000) in the image | AC-6 |
 
 ---
 
@@ -153,6 +160,10 @@ Risk acceptances are documented inline with `checkov:skip` justifications, the c
 
 **OWASP ZAP:** **5 warnings → 1**, 0 failures. Missing HTTP security headers were added through a Flask `after_request` hook so every response, including error pages, is covered. The remaining informational finding confirms responses are non-cacheable, which is intended.
 
+**SonarCloud:** Quality Gate passing. Remediated a Blocker (dev server bound to all interfaces), a recursive `COPY . .` that could pull secrets into the image, unpinned dependency installs, and routes without explicit HTTP methods. One CSRF hotspot was reviewed and marked safe: the app has no forms, cookies, or state-changing endpoints.
+
+**Tests:** 4 pytest tests covering both routes and the security headers on normal and error responses, 94% line coverage.
+
 **Grype:** fixable CVEs in `gunicorn`, `flask`, `pip`, and `wheel` were patched by upgrading dependencies. The pipeline fails on fixable critical CVEs; unfixable OS-level findings remain recorded in the SBOM.
 
 ---
@@ -170,6 +181,9 @@ Risk acceptances are documented inline with `checkov:skip` justifications, the c
 | Checkov failed with new findings months later | Code drift and newer Checkov policies | Triaged 14 findings: 10 fixed, 4 risk-accepted |
 | ZAP job green but scan not completing | `continue-on-error` masked ZAP exit code 3; report path not writable by the ZAP user | Mounted a writable output folder and uploaded the report as an artifact |
 | Merge conflict in `main.tf` during rebase | Local and remote versions both modified the ECR block | Resolved manually, keeping the hardened configuration |
+| All pipeline jobs green, but SonarCloud check red | The scan uploaded results but the Quality Gate failed on new code | Added tests and coverage reporting; fixed the Blocker and supply-chain findings |
+| Pipeline would not load after editing the SAST job | YAML indentation placed a job inside another job | Re-indented and validated the workflow locally before pushing |
+| Checkov passed with the KMS key missing | Checkov does not resolve references | Restored the key and added `terraform fmt -check` and `terraform validate` to the pipeline |
 
 ---
 
@@ -199,6 +213,15 @@ Security scans should run on every change. Infrastructure changes should be deli
 **Why Checkov before Terraform?**
 Scanning code catches misconfigurations before they exist, which is cheaper and safer than finding them in a live environment.
 
+**Why lock dependencies with hashes?**
+Pinning top-level packages still lets sub-dependencies change between builds. The lock file pins every package with SHA-256 hashes, and `--only-binary :all:` installs prebuilt wheels so no package setup scripts run during the build.
+
+**Why CloudTrail log file validation?**
+Digest files make it possible to prove delivered audit logs were not modified or deleted after the fact.
+
+**Why split Terraform by file?**
+Terraform loads every `.tf` file in a directory as one configuration, so files are organized by concern for review and navigation. Resource addresses are unchanged, so the split has no effect on state.
+
 **Why drop all Linux capabilities in pods?**
 Even if a process is compromised, it cannot alter networking, mount filesystems, or make privileged kernel calls.
 
@@ -209,11 +232,13 @@ Even if a process is compromised, it cannot alter networking, mount filesystems,
 | Layer | Tools |
 |---|---|
 | Pipeline | GitHub Actions, OIDC |
+| Testing | pytest, pytest-cov |
 | Secret scanning | Gitleaks |
 | Static analysis | Checkov (IaC), SonarCloud (SAST) |
 | Dynamic analysis | OWASP ZAP |
 | Supply chain | Syft (SBOM), Grype (CVE) |
-| Infrastructure | Terraform, AWS VPC, EKS, ECR, KMS, IAM, GuardDuty, S3 |
+| Infrastructure | Terraform, AWS VPC, EKS, ECR, KMS, IAM, GuardDuty, CloudTrail, S3 |
+| Dependencies | pip-tools (hash-locked requirements) |
 | Containers | Docker, Kubernetes, Helm |
 | Observability | CloudWatch, Prometheus, Grafana |
 
@@ -231,6 +256,23 @@ Even if a process is compromised, it cannot alter networking, mount filesystems,
 | Pre-deploy DAST only | Additional post-deploy scan against staging |
 | Personal SonarCloud token | Organization-scoped token not tied to an individual |
 | Metrics only | Alerting rules, SLOs, and log aggregation |
+| CloudTrail delivered to S3 only | CloudWatch Logs integration with metric filters and alarms (root use, console login without MFA, IAM policy changes) |
+| Findings reviewed per tool | AWS Security Hub and AWS Config for a central view and continuous compliance checks |
+
+---
+
+## Repository Layout
+
+```
+.github/workflows/pipeline.yml   CI/CD pipeline
+app/                             Flask app, Dockerfile, hash-locked requirements
+tests/                           pytest unit tests
+k8s/deployment.yaml              ServiceAccount, Deployment, Service
+terraform/
+  providers.tf   kms.tf   network.tf   flow-logs.tf   cloudtrail.tf
+  ecr.tf   eks.tf   irsa.tf   guardduty.tf   s3.tf
+  variables.tf   backend.tf
+```
 
 ---
 
