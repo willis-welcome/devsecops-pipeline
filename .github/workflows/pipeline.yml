@@ -69,7 +69,8 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pip install -r app/requirements.txt pytest pytest-cov
+          pip install --require-hashes -r app/requirements.txt
+          pip install pytest pytest-cov
           pytest tests/ --cov=app --cov-report=xml
 
       - name: SonarCloud Scan

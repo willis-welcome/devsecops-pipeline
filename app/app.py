@@ -15,12 +15,12 @@ def set_security_headers(response):
 
 
 # Used by Kubernetes probes and the pipeline readiness check
-@app.route("/health")
+@app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "DevSecOps Pipeline Running"})
 

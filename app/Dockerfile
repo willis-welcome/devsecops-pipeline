@@ -1,20 +1,17 @@
 FROM python:3.13-slim
 
-# Patch OS packages that have fixes available
+# Patch OS packages and create a non-root user matching the Kubernetes securityContext (UID 1000)
 RUN apt-get update && \
     apt-get upgrade -y --no-install-recommends && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Non-root user matching the Kubernetes securityContext (UID 1000)
-RUN useradd --uid 1000 --no-create-home --shell /usr/sbin/nologin appuser
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --uid 1000 --no-create-home --shell /usr/sbin/nologin appuser
 
 WORKDIR /app
 
-# Dependencies first so this layer is cached when only app code changes
+# Hash-locked dependencies, prebuilt wheels only (no setup scripts run at build time)
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip wheel && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r requirements.txt
 
 # Copy only the application code, never the whole build context
 COPY app.py .
